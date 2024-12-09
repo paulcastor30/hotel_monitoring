@@ -236,6 +236,42 @@ void sendData()
   }
 }
 
+void WiFiStationConnected(WiFiEvent_t event, WiFiEventInfo_t info)
+{
+  Serial.println("Connected to AP successfully!");
+}
+
+void WiFiGotIP(WiFiEvent_t event, WiFiEventInfo_t info)
+{
+  Serial.println("WiFi connected");
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
+
+  Serial.println(" CONNECTED");
+  led.off();
+  delay(500);
+  led.setColor(RGBLed::RED);
+}
+
+void WiFiStationDisconnected(WiFiEvent_t event, WiFiEventInfo_t info)
+{
+  Serial.println("Disconnected from WiFi access point");
+  Serial.print("WiFi lost connection. Reason: ");
+  Serial.println(info.wifi_sta_disconnected.reason);
+  Serial.println("Trying to Reconnect");
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED)
+  {
+    // delay(500);
+    Serial.print(".");
+    led.setColor(RGBLed::RED);
+    delay(500);
+    led.off();
+    delay(500);
+  }
+}
+
 void setup()
 {
   // Serial Display init
@@ -257,8 +293,24 @@ void setup()
   rfid.uid.size = 0;
   Serial.println("\nRFID init done");
 
+  // WiFi Initialization
   //  Serial.println(WIFI_SSID);
   //  Serial.println(WIFI_PASSWORD);
+
+  // delete old config
+  WiFi.disconnect(true);
+  delay(1000);
+
+  WiFi.onEvent(WiFiStationConnected, WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_CONNECTED);
+  WiFi.onEvent(WiFiGotIP, WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_GOT_IP);
+  WiFi.onEvent(WiFiStationDisconnected, WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+
+  /* Remove WiFi event
+    Serial.print("WiFi Event ID: ");
+    Serial.println(eventID);
+    WiFi.removeEvent(eventID);
+    */
+
   // First step is to configure WiFi STA and connect in order to get the current time and date.
   Serial.printf("Connecting to %s ", ssid);
   WiFi.begin(ssid, password);
