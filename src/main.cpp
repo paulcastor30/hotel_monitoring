@@ -10,6 +10,8 @@
 #include <SPI.h>
 #include <MFRC522.h>
 #include <RGBLed.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
 
 // Solid State Relay Pin
 #define SSR 2
@@ -31,8 +33,33 @@ MFRC522::MIFARE_Key key;
 // RFID Variables
 byte nuidPICC[4];
 bool locked = false;
-// rfid functions
 
+// Server  Credentials - to be secured later
+const char *client_key = "6X3XFeapdoOJEULwhCdAfpIE";
+const char *client_secret = "AaeSBArxZjgT4GeOvSik2Gd6";
+
+// Server Addresses
+const char *request_token_address = "http://13.250.246.54/api/request-token";
+const char *send_data_address = "http://13.250.246.54/api/send-data";
+
+//  Device Location
+//  char company[] = "Company A";
+//  char floorlocation[] = "First Floor";
+//  char roomnumber[] = "100";
+
+// Wifi Variables
+const char *ssid = "Castor Hotspot";
+const char *password = "123456789";
+
+// Time Variables
+const char *ntpServer1 = "pool.ntp.org";
+const char *ntpServer2 = "time.nist.gov";
+const long gmtOffset_sec = 3600 * 8;
+const int daylightOffset_sec = 0;
+
+const char *time_zone = "PHT-8"; // TimeZone rule for Europe/Rome including daylight adjustment rules (optional)
+
+// RFID functions
 /**
    Helper routine to dump a byte array as hex values to Serial.
 */
@@ -57,6 +84,32 @@ void printDec(byte *buffer, byte bufferSize)
   }
 }
 
+/**
+ * Helper routine to convert a byte array to a hex string.
+ */
+const char *getUIDString(byte *buffer, byte bufferSize)
+{
+  static char uid[128]; // Each byte can be up to 2 characters in hex, plus 1 for null terminator
+  byte idx = 0;
+
+  for (byte i = 0; i < bufferSize; i++)
+  {
+    if (buffer[i] < 0x10)
+      uid[idx++] = '0'; // Add leading zero for single hex digit
+
+    sprintf(&uid[idx], "%02X", buffer[i]); // Convert the byte to hex and append it to the string
+    idx += 2;                              // Move index forward by 2 for the next two characters
+
+    // Optionally add a separator like ':' (commented out here)
+    // if (i != bufferSize - 1)
+    //   uid[idx++] = ':';
+  }
+
+  uid[idx] = '\0'; // Null-terminate the string
+
+  return uid; // Return the pointer to the constant string
+}
+
 bool PICC_IsAnyCardPresent()
 {
   byte bufferATQA[2];
@@ -75,88 +128,6 @@ bool PICC_IsAnyCardPresent()
 /*
    get RFID card data
 */
-void getcardData()
-{
-
-  // Wake up all cards present within the sensor/reader range.
-  bool cardPresent = PICC_IsAnyCardPresent();
-
-  // Reset the loop if no card was locked an no card is present.
-  // This saves the select process when no card is found.
-
-  // if (! locked && ! cardPresent)
-  // return;
-
-  // When a card is present (locked) the rest ahead is intensive (constantly checking if still present).
-  // Consider including code for checking only at time intervals.
-
-  // Ask for the locked card (if rfid.uid.size > 0) or for any card if none was locked.
-  // (Even if there was some error in the wake up procedure, attempt to contact the locked card.
-  // This serves as a double-check to confirm removals.)
-  // If a card was locked and now is removed, other cards will not be selected until next loop,
-  // after rfid.uid.size has been set to 0.
-  MFRC522::StatusCode result = rfid.PICC_Select(&rfid.uid, 8 * rfid.uid.size);
-
-  if (!locked && result == MFRC522::STATUS_OK)
-  {
-    locked = true;
-    // Action on card detection.
-    Serial.print(F("locked! NUID tag: "));
-    printHex(rfid.uid.uidByte, rfid.uid.size);
-    Serial.println();
-  }
-  else if (locked && result != MFRC522::STATUS_OK)
-  {
-    locked = false;
-    rfid.uid.size = 0;
-    // Action on card removal.
-    Serial.print(F("unlocked! Reason for unlocking: "));
-    Serial.println(rfid.GetStatusCodeName(result));
-  }
-  else if (!locked && result != MFRC522::STATUS_OK)
-  {
-    // Clear locked card data just in case some data was retrieved in the select procedure
-    // but an error prevented locking.
-    rfid.uid.size = 0;
-  }
-
-  Serial.print("RFID Status: ");
-  Serial.println(locked ? "true" : "false");
-  rfid.PICC_HaltA();
-}
-
-// Timer / Delay Variables
-unsigned long currentMillis;
-
-// get data task
-unsigned long getdatastartMillis;           // some global variables available anywhere in the program
-const unsigned long getDatainterval = 5000; // the value is a number of milliseconds
-
-// send data task
-unsigned long senddatastartMillis;            // some global variables available anywhere in the program
-const unsigned long sendDatainterval = 10000; // the value is a number of milliseconds
-
-// Device  Credentials
-
-// Device UID - Permanent Address / Identifier
-uint64_t device_UID;
-
-// Device Location
-char company[] = "Company A";
-char floorlocation[] = "First Floor";
-char roomnumber[] = "100";
-
-// Wifi Variables
-const char *ssid = "Castor Hotspot";
-const char *password = "123456789";
-
-// Time Variables
-const char *ntpServer1 = "pool.ntp.org";
-const char *ntpServer2 = "time.nist.gov";
-const long gmtOffset_sec = 3600 * 8;
-const int daylightOffset_sec = 0;
-
-const char *time_zone = "PHT-8"; // TimeZone rule for Europe/Rome including daylight adjustment rules (optional)
 
 // functions for getting UID of the ESP32 device
 uint64_t getChipMAC()
@@ -166,23 +137,31 @@ uint64_t getChipMAC()
   return chipMAC; // Return the MAC address
 }
 
+const char *macToString(uint64_t mac)
+{
+  static char macStr[18];          // 17 characters for MAC address + 1 for null terminator
+  sprintf(macStr, "%012llx", mac); // Convert MAC to string format
+  return macStr;
+}
+
 // Function for printing the local time from the server
-void printLocalTime()
+const char *getLocalTime()
 {
   struct tm timeinfo;
   if (!getLocalTime(&timeinfo))
   {
     Serial.println("No time available (yet)");
-    return;
+    return "";
   }
-  Serial.println(&timeinfo, "%A, %B %d %Y %H:%M:%S");
-
+  // Serial.println(&timeinfo, "%A, %B %d %Y %H:%M:%S");
+  Serial.println(&timeinfo, "%m-%d-%Y %H:%M:%S");
+  static char timeString[20];
+  strftime(timeString, sizeof(timeString), "%m-%d-%Y %H:%M:%S", &timeinfo);
+  return timeString;
   /*
     // Arrays to hold month names and weekday names
     const char* months[] = {"January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"};
     const char* weekdays[] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
-
-
 
     // Extract each component of the time
     int year = timeinfo.tm_year + 1900;  // tm_year is years since 1900
@@ -212,28 +191,115 @@ void printLocalTime()
 void timeavailable(struct timeval *t)
 {
   Serial.println("Got time adjustment from NTP!");
-  printLocalTime();
+  // printLocalTime();
 }
 
-void getData()
+const char *RequestToken(const char *device_UID)
 {
-  if (currentMillis - getdatastartMillis >= getDatainterval) // test whether the period has elapsed
+
+  HTTPClient http_request;
+
+  // Specify the API endpoint
+  http_request.begin(request_token_address);
+  http_request.addHeader("Content-Type", "application/json"); // Set content type to JSON
+
+  // Create the JSON payload
+  JsonDocument json_doc_request;
+  json_doc_request["client_key"] = client_key;
+  json_doc_request["client_secret"] = client_secret;
+  json_doc_request["serial_no"] = device_UID;
+
+  String json_string_request;
+  serializeJson(json_doc_request, json_string_request);
+
+  Serial.println("Generated JSON Payload for Request Token:");
+  Serial.println(json_string_request);
+
+  // Send HTTP POST request
+  int http_request_response_code = http_request.POST(json_string_request);
+
+  // Check the server response
+  if (http_request_response_code > 0)
   {
-    Serial.println("Reading RFID Card!");
-    getcardData();
-    // printLocalTime();  // it will take some time to sync time :)
-    Serial.println("5 seconds is working!");
-    getdatastartMillis = currentMillis; // IMPORTANT to save the start time of the current LED state.
+    Serial.print("HTTP Response code: ");
+    Serial.println(http_request_response_code);
+
+    String response = http_request.getString();
+    Serial.println("Response:");
+    Serial.println(response);
+
+    // Parse the response to get the token
+    JsonDocument json_doc_request_response;
+    DeserializationError error = deserializeJson(json_doc_request_response, response);
+    if (!error)
+    {
+      // token = json_doc_request_response["token"].as<String>();
+      const char *token_data = json_doc_request_response["token"].as<const char *>();
+      Serial.print("Token: ");
+      Serial.println(token_data);
+
+      static char token_buffer[256];
+      strncpy(token_buffer, token_data, sizeof(token_buffer) - 1);
+      token_buffer[sizeof(token_buffer) - 1] = '\0'; // Ensure null-termination
+      return token_buffer;
+    }
+    else
+    {
+      Serial.println("Failed to parse response");
+    }
   }
+  else
+  {
+    Serial.print("Error on sending POST: ");
+    Serial.println(http_request_response_code);
+  }
+  // Free resources
+  http_request.end();
 }
 
-void sendData()
+void SendData(const char *device_UID, const char *token, const char *RFID_tag_serial_no, const char *scan_time, const char *scan_type)
 {
-  if (currentMillis - senddatastartMillis >= sendDatainterval) // test whether the period has elapsed
+  HTTPClient http_send;
+
+  http_send.begin(send_data_address);
+  http_send.addHeader("Content-Type", "application/json"); // Set content type to JSON
+
+  JsonDocument json_doc_send;
+  json_doc_send["client_key"] = client_key;
+  json_doc_send["client_secret"] = client_secret;
+  json_doc_send["receiver_serial_no"] = device_UID;
+  json_doc_send["receiver_token"] = token;
+  json_doc_send["tag_serial_no"] = RFID_tag_serial_no;
+  json_doc_send["scan_time"] = scan_time;
+  json_doc_send["scan_type"] = scan_type;
+
+  String json_string_send;
+  serializeJson(json_doc_send, json_string_send);
+
+  Serial.println("Generated JSON Payload (jsonString2):");
+  Serial.println(json_string_send);
+
+  // Send HTTP POST request
+  int http_send_response_code = http_send.POST(json_string_send);
+
+  // Check the server response
+  if (http_send_response_code > 0)
   {
-    Serial.println("10 seconds is working!");
-    senddatastartMillis = currentMillis; // IMPORTANT to save the start time of the current LED state.
+    Serial.print("HTTP http_send_response_code code: ");
+    Serial.println(http_send_response_code);
+
+    String response = http_send.getString();
+    Serial.println("Response:");
+    Serial.println(response);
   }
+  else
+  {
+    Serial.print("Error on sending POST: ");
+    Serial.println(http_send_response_code);
+  }
+
+  // Free resources
+  http_send.end();
 }
 
 void WiFiStationConnected(WiFiEvent_t event, WiFiEventInfo_t info)
@@ -355,27 +421,12 @@ void setup()
   */
   // configTzTime(time_zone, ntpServer1, ntpServer2);
 
-  // Call the function to get the UID of the device
-  device_UID = getChipMAC();
   // UID Debugging
-  Serial.printf("\nDevice UID: %012llx\n", device_UID);
-
-  // Initial Start Time
-  getdatastartMillis = millis();  // initial start time
-  senddatastartMillis = millis(); // initial start time
+  Serial.printf("\nDevice UID: %012llx\n", getChipMAC());
 }
 
 void loop()
 {
-  // get the current "time" (actually the number of milliseconds since the program started)
-  // currentMillis = millis();
-
-  // Check everything every 5 seconds
-  // getData();
-
-  // send data every 10 seconds via http
-  // sendData();
-
   // Wake up all cards present within the sensor/reader range.
   bool cardPresent = PICC_IsAnyCardPresent();
 
@@ -412,14 +463,42 @@ void loop()
     led.setColor(RGBLed::GREEN);
 
     /*
+     * Request token to the server
+     */
+    uint64_t chipMAC = getChipMAC();
+    const char *macString = macToString(chipMAC);
+    Serial.print("Token received Loop: ");
+    Serial.print(RequestToken(macString));
+    Serial.println();
+
+    // char token_received[20];
+    // strcpy(token_received, (const char *)RequestToken(macString));
+
+    // if (token_received != nullptr)
+    // {
+    //   Serial.print("Token received Loop: ");
+    //   Serial.print(token_received);
+    //   Serial.println();
+    // }
+    // else
+    // {
+    //   Serial.println("No token available.");
+    // }
+
+    /*
      *  Send data to server
      */
+
+    Serial.print("Local Time: ");
+    Serial.println(getLocalTime());
+    SendData(macString, RequestToken(macString), getUIDString(rfid.uid.uidByte, rfid.uid.size), getLocalTime(), "Entry");
+
     // print data
-    Serial.printf("\nDevice UID: %012llx\n", device_UID);
-    Serial.printf("Company: %s\n", company);
-    Serial.printf("Floor: %s\n", floorlocation);
-    Serial.printf("Room Number: %s\n", roomnumber);
-    printLocalTime();
+    Serial.printf("\nDevice UID: %012llx\n", getChipMAC());
+    // Serial.printf("Company: %s\n", company);
+    // Serial.printf("Floor: %s\n", floorlocation);
+    // Serial.printf("Room Number: %s\n", roomnumber);
+    // String currentTime = getLocalTime();
     // send data to server in JSON format using HTTP POST
 
     Serial.println();
@@ -432,7 +511,7 @@ void loop()
     Serial.print(F("\nunlocked! Reason for unlocking: "));
     Serial.println(rfid.GetStatusCodeName(result));
     /*
-     * Turn on the SSR
+     * Turn off the SSR
      */
     digitalWrite(SSR, LOW);
 
@@ -440,17 +519,18 @@ void loop()
      * SET RGB LED to RED
      */
     led.setColor(RGBLed::RED);
-    /*
-     * Send data to server
-     */
-    // print data
-    Serial.printf("\nDevice UID: %012llx\n", device_UID);
-    Serial.printf("Company: %s\n", company);
-    Serial.printf("Floor: %s\n", floorlocation);
-    Serial.printf("Room Number: %s\n", roomnumber);
-    printLocalTime();
 
-    // send data to server in JSON format using HTTP POST
+    /*
+     * Request token to the server
+     */
+    uint64_t chipMAC = getChipMAC();
+    const char *macString = macToString(chipMAC);
+    const char *token_received = RequestToken(macString);
+
+    /*
+     *  Send data to server
+     */
+    // SendData(macString, token, getUIDString(rfid.uid.uidByte, rfid.uid.size), getLocalTime(), "Entry");
   }
   else if (!locked && result != MFRC522::STATUS_OK)
   {
